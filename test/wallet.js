@@ -1019,10 +1019,266 @@ contract('Wallet', function(accounts) {
           return web3.eth.getBalancePromise(aWalletInstance.address);
         })
         .then(balance => {
-          assert.strictEqual(web3.toWei(3 /*instead of 4*/, "ether"), balance.toString(10), "on a vulnerable contract modified explicitely FOR TEST ONLY. RECURSIVE CALL IN ACTION of confirm fonction => 3 ethers instead of 4 ethers expected on the multisig wallet. ");
+          assert.strictEqual(web3.toWei(3 /*instead of 4*/ , "ether"), balance.toString(10), "on a vulnerable contract modified explicitely FOR TEST ONLY. RECURSIVE CALL IN ACTION of confirm fonction => 3 ethers instead of 4 ethers expected on the multisig wallet. ");
         });
     });
   });
 
 
+  describe("Daily Limit the usecase", function() {
+
+    var aWalletInstance;
+
+    beforeEach("create a new contract instance", function() {
+      //Wallet(address[] _owners, uint _required, uint _daylimit)
+      return Wallet.new([ownerA, ownerB], 2, web3.toWei(web3.toBigNumber(1), "ether"), {
+          from: creator,
+          gas: amountGazProvided
+        })
+        .then(instance => {
+          aWalletInstance = instance;
+        });
+    });
+
+    it("Multisig wallet 0 balance after creation", function() {
+      return web3.eth.getBalancePromise(aWalletInstance.address)
+        .then(balance => {
+          assert.strictEqual(0, balance.toNumber(), "0 balance");
+        });
+    });
+
+    it("Daily Limit the usecase Test", function() {
+      var intialRecever1Balance;
+      //1 ) ownerA load the multisig wallet with 4 ethers
+      //2 ) ownerA invoke execute to Send 2 ethers to receiver1.
+      //3 ) ownerB confirm
+      //4 ) receiver1  received 2 ethers from multisig confirmed by ownerA and ownerB
+      //5 ) Daily Limit is not impacted by a multisig sent
+      //5 ) ownerA invoke execute to Send 1 ether to receiver1.(without owner B confirm)
+      //7 ) receiver1  received 1 ether. receiver1 has now 3 ethers
+      //8 ) ownerA invoke execute to try to Send 1 ether to receiver1.(without owner B confirm)
+      //9 ) receiver1 still have 3 ethers
+      //10 ) The DailyLimit is 1 ether so nothing send
+      //  =>DailyLimit works
+      return web3.eth.sendTransactionPromise({
+          from: ownerA,
+          to: aWalletInstance.address,
+          gas: amountGazProvided,
+          value: web3.toWei(web3.toBigNumber(4), "ether")
+        })
+        .then(txSent => {
+          return web3.eth.getTransactionReceiptMined(txSent);
+        })
+        .then(txMined => {
+          assert.isBelow(txMined.gasUsed, amountGazProvided, "should not use all gas");
+          return Promise.all([
+            web3.eth.getBalancePromise(aWalletInstance.address),
+            web3.eth.getBalancePromise(receiver1)
+          ]);
+        })
+        .then(balances => {
+          //1 ) ownerA load the multisig wallet with 4 ethers
+          assert.strictEqual(web3.toWei(4, "ether"), balances[0].toString(10), " 4 ethers on multisig wallet");
+          intialRecever1Balance = balances[1];
+          //2 ) ownerA invoke execute to Send 2 ethers to receiver1.
+          return aWalletInstance.execute(receiver1, web3.toWei(2, "ether"), "the sky's the limit", {
+            from: ownerA,
+            gaz: amountGazProvided
+          });
+        })
+        .then(txMined => {
+          assert.strictEqual(txMined.logs[1].event, "ConfirmationNeeded", "ConfirmationNeeded from ownerB");
+          operationToConfirm = txMined.logs[1].args.operation;
+          //3 ) ownerB confirm
+          return aWalletInstance.confirm(operationToConfirm, {
+            from: ownerB,
+            gaz: amountGazProvided
+          });
+        })
+        .then(txMined => {
+          assert.isBelow(txMined.receipt.gasUsed, amountGazProvided, "should not use all gas");
+          return web3.eth.getBalancePromise(receiver1);
+        })
+        .then(balance => {
+          //4 ) receiver1  received 2 ethers from multisig confirmed by ownerA and ownerB
+          assert.strictEqual(intialRecever1Balance.toString(10), balance.minus(web3.toWei(2, "ether")).toString(10), "receiver1 must received 2 ethers comming from the multisig wallet");
+          return Promise.all([
+            aWalletInstance.m_dailyLimit.call(),
+            aWalletInstance.m_spentToday.call()
+          ]);
+        })
+        .then(daylimitfields => {
+          [m_dailyLimit, m_spentToday] = daylimitfields;
+          assert.strictEqual(web3.toWei(1, "ether").toString(10), m_dailyLimit.toString(10), "m_dailyLimit is 1 ether");
+          //console.log(m_dailyLimit);
+          assert.strictEqual(web3.toWei(0, "ether").toString(10), m_spentToday.toString(10), "When sent with Mulit sig : do not impact m_spentToday so it is 0 here !");
+          //console.log(m_spentToday);
+          //5 ) ownerA invoke execute to Send 1 ethers to receiver1.(without owner B confirm)
+          return aWalletInstance.execute(receiver1, web3.toWei(1, "ether"), 0, {
+            from: ownerA,
+            gaz: amountGazProvided
+          });
+        })
+        .then(txMined => {
+          assert.isBelow(txMined.receipt.gasUsed, amountGazProvided, "should not use all gas");
+          return web3.eth.getBalancePromise(receiver1);
+        })
+        .then(balance => {
+          //7 ) receiver1  received 1 ether. receiver1 has now 3 ethers
+          assert.strictEqual(intialRecever1Balance.toString(10), balance.minus(web3.toWei(3, "ether")).toString(10), "we succed to send 3 ethers to receiver1");
+          return Promise.all([
+            aWalletInstance.m_dailyLimit.call(),
+            aWalletInstance.m_spentToday.call()
+          ]);
+        })
+        .then(daylimitfields => {
+          [m_dailyLimit, m_spentToday] = daylimitfields;
+          assert.strictEqual(web3.toWei(1, "ether").toString(10), m_dailyLimit.toString(10), "m_dailyLimit is 1 ether");
+          //console.log(m_dailyLimit);
+          assert.strictEqual(web3.toWei(1, "ether").toString(10), m_spentToday.toString(10), "m_dailyLimit is 1 ether ownerA can m_spentToday 1 ether");
+          //console.log(m_spentToday);
+          //8 ) ownerA invoke execute to try to Send 1 ether to receiver1.(without owner B confirm)
+          return aWalletInstance.execute(receiver1, web3.toWei(1, "ether"), 0, {
+              from: ownerA,
+              gaz: amountGazProvided
+            })
+            .then(txMined => {
+              assert.isBelow(txMined.receipt.gasUsed, amountGazProvided, "should not use all gas");
+              return web3.eth.getBalancePromise(receiver1);
+            })
+            .then(balance => {
+              //9 ) receiver1 still have 3 ethers
+              assert.strictEqual(intialRecever1Balance.toString(10), balance.minus(web3.toWei(3, "ether")).toString(10), "must be still 3 ethers");
+              return Promise.all([
+                aWalletInstance.m_dailyLimit.call(),
+                aWalletInstance.m_spentToday.call()
+              ]);
+            })
+            .then(daylimitfields => {
+              [m_dailyLimit, m_spentToday] = daylimitfields;
+              //10 ) The DailyLimit is 1 ether so nothing send
+              assert.strictEqual(web3.toWei(1, "ether").toString(10), m_dailyLimit.toString(10), "m_dailyLimit is 1 ether");
+              //console.log(m_dailyLimit);
+              assert.strictEqual(web3.toWei(1, "ether").toString(10), m_spentToday.toString(10), "m_spentToday still 1 ether. DayLimit works!");
+              //console.log(m_spentToday);
+            });
+        });
+    });
+  });
+
+
+  describe("Daily Limit the usecase, when DailyLimit set to 0", function() {
+
+    var aWalletInstance;
+
+    beforeEach("create a new contract instance", function() {
+      //Wallet(address[] _owners, uint _required, uint _daylimit)
+      return Wallet.new([ownerA, ownerB], 2, web3.toWei(web3.toBigNumber(0), "ether"), {
+          from: creator,
+          gas: amountGazProvided
+        })
+        .then(instance => {
+          aWalletInstance = instance;
+        });
+    });
+
+    it("Multisig wallet 0 balance after creation", function() {
+      return web3.eth.getBalancePromise(aWalletInstance.address)
+        .then(balance => {
+          assert.strictEqual(0, balance.toNumber(), "0 balance");
+        });
+    });
+
+    it("Daily Limit the usecase, when DailyLimit set to 0", function() {
+      var intialRecever1Balance;
+      //1 ) ownerA load the multisig wallet with 4 ethers
+      //2 ) ownerA invoke execute to Send 2 ethers to receiver1.
+      //3 ) ownerB confirm
+      //4 ) receiver1  received 2 ethers from multisig confirmed by ownerA and ownerB
+      //5 ) Daily Limit is not impacted by a multisig sent
+      //5 ) ownerA invoke execute to Send 1 ether to receiver1.(without owner B confirm)
+      //6 ) receiver1 still have 2 ethers
+      //7 ) The DailyLimit is 0 ether so nothing send
+      //  =>DailyLimit works
+      return web3.eth.sendTransactionPromise({
+          from: ownerA,
+          to: aWalletInstance.address,
+          gas: amountGazProvided,
+          value: web3.toWei(web3.toBigNumber(4), "ether")
+        })
+        .then(txSent => {
+          return web3.eth.getTransactionReceiptMined(txSent);
+        })
+        .then(txMined => {
+          assert.isBelow(txMined.gasUsed, amountGazProvided, "should not use all gas");
+          return Promise.all([
+            web3.eth.getBalancePromise(aWalletInstance.address),
+            web3.eth.getBalancePromise(receiver1)
+          ]);
+        })
+        .then(balances => {
+          //1 ) ownerA load the multisig wallet with 4 ethers
+          assert.strictEqual(web3.toWei(4, "ether"), balances[0].toString(10), " 4 ethers on multisig wallet");
+          intialRecever1Balance = balances[1];
+          //2 ) ownerA invoke execute to Send 2 ethers to receiver1.
+          return aWalletInstance.execute(receiver1, web3.toWei(2, "ether"), "the sky's the limit", {
+            from: ownerA,
+            gaz: amountGazProvided
+          });
+        })
+        .then(txMined => {
+          assert.strictEqual(txMined.logs[1].event, "ConfirmationNeeded", "ConfirmationNeeded from ownerB");
+          operationToConfirm = txMined.logs[1].args.operation;
+          //3 ) ownerB confirm
+          return aWalletInstance.confirm(operationToConfirm, {
+            from: ownerB,
+            gaz: amountGazProvided
+          });
+        })
+        .then(txMined => {
+          assert.isBelow(txMined.receipt.gasUsed, amountGazProvided, "should not use all gas");
+          return web3.eth.getBalancePromise(receiver1);
+        })
+        .then(balance => {
+          //4 ) receiver1  received 2 ethers from multisig confirmed by ownerA and ownerB
+          assert.strictEqual(intialRecever1Balance.toString(10), balance.minus(web3.toWei(2, "ether")).toString(10), "receiver1 must received 2 ethers comming from the multisig wallet");
+          return Promise.all([
+            aWalletInstance.m_dailyLimit.call(),
+            aWalletInstance.m_spentToday.call()
+          ]);
+        })
+        .then(daylimitfields => {
+          [m_dailyLimit, m_spentToday] = daylimitfields;
+          assert.strictEqual(web3.toWei(0, "ether").toString(10), m_dailyLimit.toString(10), "m_dailyLimit is 0 ether");
+          //console.log(m_dailyLimit);
+          assert.strictEqual(web3.toWei(0, "ether").toString(10), m_spentToday.toString(10), "When sent with Mulit sig : do not impact m_spentToday so it is 0 here !");
+          //console.log(m_spentToday);
+          //5 ) ownerA invoke execute to Send 1 ethers to receiver1.(without owner B confirm)
+          return aWalletInstance.execute(receiver1, web3.toWei(1, "ether"), 0, {
+            from: ownerA,
+            gaz: amountGazProvided
+          });
+        })
+        .then(txMined => {
+          assert.isBelow(txMined.receipt.gasUsed, amountGazProvided, "should not use all gas");
+          return web3.eth.getBalancePromise(receiver1);
+        })
+        .then(balance => {
+          //6 ) receiver1 still have 2 ethers
+          assert.strictEqual(intialRecever1Balance.toString(10), balance.minus(web3.toWei(2, "ether")).toString(10), "nothing sent because DailyLimit = 0");
+          return Promise.all([
+            aWalletInstance.m_dailyLimit.call(),
+            aWalletInstance.m_spentToday.call()
+          ]);
+        })
+        .then(daylimitfields => {
+          [m_dailyLimit, m_spentToday] = daylimitfields;
+          //7 ) The DailyLimit is 0 ether so nothing send
+          assert.strictEqual(web3.toWei(0, "ether").toString(10), m_dailyLimit.toString(10), "m_dailyLimit is 0 ether");
+          //console.log(m_dailyLimit);
+          assert.strictEqual(web3.toWei(0, "ether").toString(10), m_spentToday.toString(10), "m_dailyLimit is 0 ether ownerA can't m_spentToday 1 ether");
+          //console.log(m_spentToday);
+        });
+    });
+  });
 });
