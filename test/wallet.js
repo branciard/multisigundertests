@@ -22,7 +22,7 @@ Extensions.init(web3, assert);
 
 contract('Wallet', function(accounts) {
 
-  var creator, ownerA, ownerB, ownerC;
+  var creator, ownerA, ownerB, owner1, owner2, owner3, owner4, owner5;
   var amountGazProvided = 3000000;
   let isTestRPC;
 
@@ -31,17 +31,25 @@ contract('Wallet', function(accounts) {
     creator = accounts[0];
     ownerA = accounts[1];
     ownerB = accounts[2];
-    ownerC = accounts[3];
-    receiver1 = accounts[4];
+    owner1 = accounts[3];
+    owner2 = accounts[4];
+    owner3 = accounts[5];
+    owner4 = accounts[6];
+    owner5 = accounts[7];
+    receiver1 = accounts[8];
     return Extensions.makeSureAreUnlocked(
-        [creator, ownerA, ownerB, ownerC, receiver1])
+        [creator, ownerA, ownerB, owner1, receiver1])
       .then(() => web3.eth.getBalancePromise(creator))
       .then(balance => assert.isTrue(
         web3.toWei(web3.toBigNumber(90), "ether").lessThan(balance),
         "creator should have at least 90 ether, not " + web3.fromWei(balance, "ether")))
       .then(() => Extensions.refillAccount(creator, ownerA, 50))
       .then(() => Extensions.refillAccount(creator, ownerB, 2))
-      .then(() => Extensions.refillAccount(creator, ownerC, 2))
+      .then(() => Extensions.refillAccount(creator, owner1, 2))
+      .then(() => Extensions.refillAccount(creator, owner2, 2))
+      .then(() => Extensions.refillAccount(creator, owner3, 2))
+      .then(() => Extensions.refillAccount(creator, owner4, 2))
+      .then(() => Extensions.refillAccount(creator, owner5, 2))
       .then(() => web3.version.getNodePromise())
       .then(node => isTestRPC = node.indexOf("EthereumJS TestRPC") >= 0);
 
@@ -1281,4 +1289,69 @@ contract('Wallet', function(accounts) {
         });
     });
   });
+
+
+  describe("Config : test owners ", function() {
+
+    var aWalletInstance;
+
+    beforeEach("create a new contract instance", function() {
+      //Wallet(address[] _owners, uint _required, uint _daylimit)
+      return Wallet.new([owner1, owner2, owner3, owner4, owner5], 3, web3.toWei(web3.toBigNumber(0), "ether"), {
+          from: creator,
+          gas: amountGazProvided
+        })
+        .then(instance => {
+          aWalletInstance = instance;
+        });
+    });
+
+    it("Multisig wallet 0 balance after creation", function() {
+      return web3.eth.getBalancePromise(aWalletInstance.address)
+        .then(balance => {
+          assert.strictEqual(0, balance.toNumber(), "0 balance");
+        });
+    });
+
+    it("5 owners, no creator as owner", function() {
+      return Promise.all([
+          aWalletInstance.isOwner.call(owner1, {
+            from: receiver1,
+            gaz: amountGazProvided
+          }),
+          aWalletInstance.isOwner.call(owner2, {
+            from: receiver1,
+            gaz: amountGazProvided
+          }),
+          aWalletInstance.isOwner.call(owner3, {
+            from: receiver1,
+            gaz: amountGazProvided
+          }),
+          aWalletInstance.isOwner.call(owner4, {
+            from: receiver1,
+            gaz: amountGazProvided
+          }),
+          aWalletInstance.isOwner.call(owner5, {
+            from: receiver1,
+            gaz: amountGazProvided
+          }),
+          aWalletInstance.isOwner.call(creator, {
+            from: receiver1,
+            gaz: amountGazProvided
+          })
+        ])
+        .then(isOwnersCall => {
+          [isOwner1, isOwner2, isOwner3, isOwner4, isOwner5, creator] = isOwnersCall;
+          assert.isTrue(isOwner1);
+          assert.isTrue(isOwner2);
+          assert.isTrue(isOwner3);
+          assert.isTrue(isOwner4);
+          assert.isTrue(isOwner5);
+          assert.isFalse(creator);
+        });
+    });
+
+
+  });
+
 });
